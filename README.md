@@ -15,3 +15,5 @@ onnxruntime == 1.26.0
 opencv_python == 4.12.0.88
 tqdm == 4.67.1
 ```
+### Examples
+*Link to Hugging Face will be here soon*
