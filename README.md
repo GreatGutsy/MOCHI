@@ -23,4 +23,5 @@ OUTPUT_VIDEO = "output/video/path"
 ```
 
 ### Examples
+Examples of use on the PIE: A Large-Scale Dataset and Models for Pedestrian Intention Estimation and Trajectory Prediction by A. Rasouli and I. Kotseruba and T. Kunic and J. K. Tsotsos
 https://huggingface.co/datasets/GreatGutsy/MOCHI/tree/main/Examples
