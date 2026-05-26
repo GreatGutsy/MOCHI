@@ -15,5 +15,12 @@ onnxruntime == 1.26.0
 opencv_python == 4.12.0.88
 tqdm == 4.67.1
 ```
+### Usage
+To try MOCHI, download the .onnx model and .py files. Change the video paths to your own in **inference.py**
+```text
+INPUT_VIDEO = "input/video/path"
+OUTPUT_VIDEO = "output/video/path"
+```
+
 ### Examples
-*Link to Hugging Face will be here soon*
+https://huggingface.co/datasets/GreatGutsy/MOCHI/tree/main/Examples
