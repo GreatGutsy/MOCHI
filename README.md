@@ -1,3 +1,5 @@
+<img width="820" height="230" alt="изображение" src="https://github.com/user-attachments/assets/9bb8bed1-b5af-4a31-b288-4aeb06234ce2" />
+
 # MOCHI: Spiking Neural Networks for Real-Time ROI Selection and Edge-Based Adaptive Compression
 
 MOCHI (Memory Optimized Compression Hybrid Interface) is an end-to-end framework that unifies high-speed Spiking Neural Networks (SNNs) and intelligent video compression for low-power edge hardware. Optimized for deployment on commodity single-board computers without dedicated GPU/NPU accelerators, the system eliminates the standard CPU bottleneck caused by software-bound video encoding.
