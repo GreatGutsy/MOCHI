@@ -1,12 +1,103 @@
 # MOCHI inference pipeline 2026
 # Feel free to leave suggestions in the issues or discussions tab.
 
+import csv
 import numpy as np
 import cv2
 from tqdm import tqdm
 import subprocess
 import onnxruntime as ort
 from config import *
+
+# METRICS SETTINGS (PSNR / SSIM / LPIPS)
+CALCULATE_METRICS = False      # calculation of ROI metrics
+LPIPS_NET         = "alex"
+_LPIPS_CACHE = None
+
+
+def _get_lpips():
+    """Lazy LPIPS"""
+    global _LPIPS_CACHE
+    if _LPIPS_CACHE is None:
+        try:
+            import torch
+            import lpips
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            net = lpips.LPIPS(net=LPIPS_NET, verbose=False).to(device).eval()
+            _LPIPS_CACHE = (net, device)
+        except Exception as e:
+            print(f"[metrics] LPIPS недоступен ({e}) -> LPIPS = NaN (pip install lpips)")
+            _LPIPS_CACHE = False
+    return _LPIPS_CACHE or None
+
+
+def _bgr_to_lpips_tensor(img_bgr, device):
+    """uint8 BGR (H,W,3) -> torch float (1,3,H,W) в диапазоне [-1;1], RGB."""
+    import torch
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)
+    t = torch.from_numpy(rgb.astype(np.float32)).div_(127.5).sub_(1.0)
+    return t.unsqueeze(0).to(device)
+
+
+def compute_roi_metrics(roi_before, roi_after, min_side=64):
+    nan = float("nan")
+    if (roi_before is None or roi_after is None or
+            roi_before.size == 0 or roi_after.size == 0 or
+            roi_before.shape != roi_after.shape):
+        return {"psnr": nan, "ssim": nan, "lpips": nan}
+
+    # ---- PSNR ----
+    mse = np.mean((roi_before.astype(np.float64) - roi_after.astype(np.float64)) ** 2)
+    psnr_val = float("inf") if mse == 0.0 else 10.0 * np.log10(255.0 ** 2 / mse)
+
+    # ---- SSIM ----
+    g1 = cv2.cvtColor(roi_before, cv2.COLOR_BGR2GRAY).astype(np.float64)
+    g2 = cv2.cvtColor(roi_after,  cv2.COLOR_BGR2GRAY).astype(np.float64)
+    C1, C2 = (0.01 * 255) ** 2, (0.03 * 255) ** 2
+    mu1 = cv2.GaussianBlur(g1, (11, 11), 1.5)
+    mu2 = cv2.GaussianBlur(g2, (11, 11), 1.5)
+    mu1_sq, mu2_sq, mu12 = mu1 * mu1, mu2 * mu2, mu1 * mu2
+    s1  = cv2.GaussianBlur(g1 * g1, (11, 11), 1.5) - mu1_sq
+    s2  = cv2.GaussianBlur(g2 * g2, (11, 11), 1.5) - mu2_sq
+    s12 = cv2.GaussianBlur(g1 * g2, (11, 11), 1.5) - mu12
+    ssim_map = ((2 * mu12 + C1) * (2 * s12 + C2)) / \
+               ((mu1_sq + mu2_sq + C1) * (s1 + s2 + C2))
+    ssim_val = float(ssim_map.mean())
+
+    # ---- LPIPS ----
+    lpips_val = nan
+    pack = _get_lpips()
+    if pack is not None:
+        net, device = pack
+        b, a = roi_before, roi_after
+        if min(b.shape[:2]) < min_side:
+            k = min_side / min(b.shape[:2])
+            w = max(min_side, int(round(b.shape[1] * k)))
+            h = max(min_side, int(round(b.shape[0] * k)))
+            b = cv2.resize(b, (w, h), interpolation=cv2.INTER_CUBIC)
+            a = cv2.resize(a, (w, h), interpolation=cv2.INTER_CUBIC)
+        import torch
+        with torch.no_grad():
+            lpips_val = float(net(_bgr_to_lpips_tensor(b, device),
+                                  _bgr_to_lpips_tensor(a, device)).item())
+
+    return {"psnr": psnr_val, "ssim": ssim_val, "lpips": lpips_val}
+
+
+def log_metrics(history, metrics, frame_idx):
+    for k, v in metrics.items():
+        history[k].append(v)
+
+def print_metrics_summary(history):
+    def mean_of(vals):
+        v = np.asarray(vals, dtype=np.float64)
+        v = v[~np.isnan(v)]
+        return float(v.mean()) if v.size else float("nan")
+
+    print("\n===== ROI metrics =====")
+    print(f"PSNR  mean : {mean_of(history['psnr']):10.2f} dB")
+    print(f"SSIM  mean : {mean_of(history['ssim']):10.4f}")
+    print(f"LPIPS mean : {mean_of(history['lpips']):10.4f}")
 
 def set_blur(frame, method):
     if method == "HARD_BLUR":
@@ -37,8 +128,11 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
 
     command = ffmpeg_command(video_shape, FPS, OUTPUT_VIDEO)
 
+    # metrics
+    metrics_history = {"psnr": [], "ssim": [], "lpips": []}
+
     # if needed
-    print(video_shape, FPS) 
+    print(video_shape, FPS)
 
     prev_frame = np.ascontiguousarray(np.zeros((3, size[0], size[1]), dtype=np.float32))[None, ...]
     batch = np.empty((2, video_shape[1], video_shape[0], 3))
@@ -57,14 +151,14 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
             if t % fps_to_10 == 0:
                 current_frame = cv2.resize(frame, size, interpolation=cv2.INTER_LINEAR)
                 img_yuv = cv2.cvtColor(current_frame, cv2.COLOR_BGR2YUV)
-                
+
                 current_frame = np.ascontiguousarray(img_yuv.transpose(2, 0, 1)).astype(np.float32) * 0.00392157
                 current_frame = np.expand_dims(current_frame, axis=0)
 
                 avg_visual_luma += current_frame[0].mean()
-                
+
                 # day / night setting
-                if avg_visual_luma < 0.13: 
+                if avg_visual_luma < 0.13:
                     target_v = 0.1
                     target_d = 0.005
                 else:
@@ -73,7 +167,7 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
 
                 delta_frame = np.abs(current_frame - prev_frame)
                 avg_delta_luma += delta_frame.mean()
-                
+
                 adj_d = np.clip(target_d / (avg_delta_luma / (t + 1)), 0.0005, 0.2)
                 adj_v = np.clip(target_v / (avg_visual_luma / (t + 1)), 0.005, 1.0)
 
@@ -102,7 +196,7 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
                         mean = np.mean(pts, axis=0)
                         std = np.std(pts, axis=0)
                         pts = pts[np.all(np.abs(pts - mean) <= 1.5 * std + 1e-6, axis=1)]
-                    
+
                     if len(pts) > 0:
                         x_min, y_min = np.min(pts, axis=0)
                         x_max, y_max = np.max(pts, axis=0)
@@ -121,7 +215,16 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
                         frame = set_blur(frame, BLUR_TYPE)
                         prev_blured = frame
                         frame[y1_hd:y2_hd, x1_hd:x2_hd] = temp_roi
-                        
+
+                        if CALCULATE_METRICS:
+                            m = compute_roi_metrics(temp_roi, frame[y1_hd:y2_hd, x1_hd:x2_hd])
+                            log_metrics(metrics_history, m, pbar.n + 1)
+                            pbar.set_postfix({
+                                "PSNR": f"{m['psnr']:.1f}",
+                                "SSIM": f"{m['ssim']:.3f}",
+                                "LPIPS": f"{m['lpips']:.3f}",
+                            })
+
                     else:
                         frame = set_blur(frame, BLUR_TYPE)
                         prev_blured = frame
@@ -136,13 +239,13 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
 
 
             else:
-                if len(pts) > 0: 
+                if len(pts) > 0:
                     temp_roi = frame[y1_hd:y2_hd, x1_hd:x2_hd].copy()
                     frame = prev_blured.copy()
                     frame[y1_hd:y2_hd, x1_hd:x2_hd] = temp_roi
                 else:
                     frame = prev_blured.copy()
-                    
+
             if t % fps_to_10 == 1:
                 proc.stdin.write(memoryview(prev_rect))
                 proc.stdin.write(memoryview(frame))
@@ -159,10 +262,12 @@ def main(INPUT_VIDEO: str, OUTPUT_VIDEO: str, MODEL_PATH: str = "mochi-v1.onnx")
 
     proc.stdin.close()
     proc.wait()
+    if CALCULATE_METRICS:
+        print_metrics_summary(metrics_history)
     print(f"The result is saved into {OUTPUT_VIDEO}")
 
 if __name__ == "__main__":
-    INPUT_VIDEO = "video.mp4"
-    OUTPUT_VIDEO = "mochi_compressed.mp4"
+    INPUT_VIDEO = "57.mp4"
+    OUTPUT_VIDEO = "mochi_57.mp4"
     MODEL_PATH = "mochi-v1.onnx"
     main(INPUT_VIDEO, OUTPUT_VIDEO, MODEL_PATH)
