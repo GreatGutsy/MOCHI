@@ -7,7 +7,7 @@ MOCHI (Memory Optimized Compression Hybrid Interface) is an end-to-end framework
 ### Key Features
 * **High-Speed ROI Isolation**: Implements an optimized single-step SNN core with inter-frame recursion, achieving a 6.6× inference speedup over a YOLO26n baseline pipeline.
 * **Spatial Noise Suppression**: Introduces a cellular-automata suppression mechanism based on a 1.5σ threshold rule to prevent false-positive spikes.
-* **Storage Optimization**: Drives extreme FFmpeg bitrate reduction by aggressively blurring static backgrounds while fully preserving ROI feature quality, extending the video archive depth by 20% to 30%.
+* **Storage Optimization**: Drives extreme FFmpeg bitrate reduction by aggressively blurring static backgrounds while fully preserving ROI feature quality, extending the video archive depth by 15% to 30%.
 
 ### Tested with
 ```text
